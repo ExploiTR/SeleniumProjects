@@ -16,9 +16,11 @@ namespace Fast.com
         static string format;
         static FileStream stream;
 
+        static bool headless = true;
+
         static void Main(string[] args)
         {
-            long timeIn = DateTime.Now.Millisecond;
+            long timeIn = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             if (args.Count() != 0)
             {
                 timeCount = long.Parse(args[0].Trim());
@@ -28,29 +30,29 @@ namespace Fast.com
                 {
                     case "h":
                         {
-                            timeIn = timeIn + (timeCount * 3600);
+                            timeIn += (timeCount * 3600);
                             break;
                         }
                     case "m":
                         {
-                            timeIn = timeIn + (timeCount * 60);
+                            timeIn += (timeCount * 60);
                             break;
                         }
                     default:
                         {
-                            timeIn = timeIn + timeCount;
+                            timeIn += timeCount;
                             break;
                         }
                 }
             }
             else
             {
-                timeCount = 24;
+                timeCount = 6;
                 format = "h";
-                timeIn += DateTime.Now.Millisecond + (24 * 3600);
+                timeIn += 6 * 3600 * 1000;
             }
 
-            Console.WriteLine("ETA : " + timeCount + format + " ( " + DateTime.Now.Millisecond + " / " + timeIn + " )");
+            Console.WriteLine("ETA : " + timeCount + format + " ( " + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + " / " + timeIn + " )");
 
             ChromeDriverService service = ChromeDriverService.CreateDefaultService();
             service.EnableVerboseLogging = false;
@@ -60,42 +62,105 @@ namespace Fast.com
             ChromeOptions options = new ChromeOptions();
             options.AddArgument("--log-level=3");
             options.AddArgument("disable-logging");
-            options.AddArguments("--headless");
+            if (headless)
+                options.AddArguments("--headless");
             options.PageLoadStrategy = PageLoadStrategy.Eager;
 
-            IWebDriver driver = new ChromeDriver(service,options);
-            driver.Navigate().GoToUrl("https://fast.com/");
+            IWebDriver driver = new ChromeDriver(service, options);
+            try
+            {
+                driver.Navigate().GoToUrl("https://fast.com/");
+                if (headless)
+                    Console.WriteLine("Opening url");
+            }
+            catch (Exception)
+            {
+                if (headless)
+                    Console.WriteLine("Url err, restarting...");
+                Thread.Sleep(300000);
+                driver.Quit();
+                Thread.CurrentThread.Interrupt();
+                Main(args);
+            }
 
             IWebElement element = driver.FindElement(By.Id("show-more-details-link"));
 
             while (!element.Displayed)
             {
+                if (headless)
+                {
+                    Console.WriteLine("Wait for download mode end...");
+                    Thread.Sleep(500);
+                }
                 //wait
-                Thread.Sleep(500);
             }
 
-            element.Click();
-            Thread.Sleep(2500); //wait for start upload
+            if (element != null)
+                element.Click();
+
+            if (headless)
+                Console.WriteLine("Waiting for upload to start...");
+            Thread.Sleep(5000); //wait for start upload
 
             createFile();
 
-            Console.WriteLine("Press Ctrl-C to exit!");
+            if (headless)
+                Console.WriteLine("Press Ctrl-C to exit!");
 
             for (; ; )
             {
-                if (timeIn < DateTime.Now.Millisecond)
+                if (DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() > timeIn)
                 {
+                    if (headless)
+                        Console.WriteLine("Timeout!");
                     break;
                 }
-                IWebElement reload = reloadButton(driver);
-                if (reload != null && reload.Displayed)
+                while (reloadButton(driver) == null)
                 {
-                    Console.WriteLine("ETA : " + timeCount + format + " ( " + DateTime.Now.Millisecond + " / " + timeIn + " )");
+                    if (headless)
+                    {
+                        Console.WriteLine("Waiting for reload button...");
+                        Thread.Sleep(500);
+                    }
+                    //wait
+                }
+                IWebElement reload = reloadButton(driver);
+                if (reload.Displayed)
+                {
+                    double stat = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / timeIn;
+
+                    long diff = (timeIn - DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()) / 1000;
+                    long day = diff / 86400;
+                    diff = diff - day * 86400;
+                    long hour = diff / 3600;
+                    diff = diff - hour * 3600;
+                    long minute = diff / 60;
+                    long sec = diff - diff * 60;
+
+                    Console.WriteLine("ETA : " + day + "d " + hour + "h " + minute + "m " + sec + "s " +
+                        " ( " + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + " / " + timeIn + " - " + stat + "%" + " )");
                     writeFile(driver);
 
-                    Thread.Sleep(120000);
+                    for (int i = 0; i <= 30; i++)
+                    {
+                        Console.WriteLine("Waiting " + i + "/30 " + "s");
+                        Thread.Sleep(1000);
+                    }
+
+                    if (headless)
+                        Console.WriteLine("Next test started...");
                     reload.Click();
                 }
+                /*  else
+                  {
+                      if (networkErr(driver))
+                      {
+                          Thread.Sleep(300000);
+                          driver.Quit();
+                          Thread.CurrentThread.Interrupt();
+                          Main(args);
+                      }
+                  }*/
             }
 
             stream.Close();
@@ -120,7 +185,7 @@ namespace Fast.com
             {
                 stream = new FileStream("C:\\Users\\ExploiTR\\Desktop\\Record.txt", FileMode.Append, FileAccess.Write);
             }
-            
+
             StreamWriter sw = new StreamWriter(stream);
             sw.WriteLine(dlVal + " , " + ulVal + " ," + " " + DateTime.Now.ToString());
             sw.Flush();
@@ -162,6 +227,12 @@ namespace Fast.com
             {
                 return "FAIL";
             }
+        }
+
+        private static bool networkErr(IWebDriver driver)
+        {
+            IWebElement element = driver.FindElement(By.XPath("//div[@loc-str='no_connection']"));
+            return element.Displayed;
         }
     }
 }
